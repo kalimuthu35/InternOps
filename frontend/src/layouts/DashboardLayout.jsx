@@ -247,6 +247,7 @@ export default function DashboardLayout() {
       <Link
         to={n.path}
         title={collapsed ? n.label : undefined}
+        aria-label={n.label}
         onClick={saveSidebarScroll}
         className={`group relative flex items-center gap-3 rounded-2xl text-sm font-bold transition-all duration-200
           ${collapsed ? 'justify-center px-0 py-3' : 'px-3 py-2.5'}

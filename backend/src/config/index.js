@@ -163,4 +163,9 @@ module.exports = {
     dsn: process.env.SENTRY_DSN || null,
     tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE) || 0.1,
   },
+  websocket: {
+    maxUnauthenticatedConnections:
+      parseInt(process.env.MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS, 10) || 20,
+    authTimeoutMs: parseInt(process.env.WEBSOCKET_AUTH_TIMEOUT_MS, 10) || 5000,
+  },
 };
