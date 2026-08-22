@@ -11,6 +11,7 @@ const CONCURRENCY = 20;
 const BATCH_SIZE = 500;
 
 const emailService = require('../services/email');
+const { runAttendanceAnomalyJob } = require('../modules/attendance/anomaly.service');
 
 function setupCronJobs() {
   try {
@@ -299,6 +300,23 @@ function setupCronJobs() {
         );
       } finally {
         reminderRunning = false;
+      }
+    });
+
+    cron.schedule('0 2 * * *', async () => {
+      const jobName = 'attendance-anomaly-advisory';
+      if (global.attendanceAnomalyRunning) return;
+      global.attendanceAnomalyRunning = true;
+      try {
+        const result = await runAttendanceAnomalyJob();
+        console.info(JSON.stringify({ job: jobName, ...result }), 'Cron job completed');
+      } catch (err) {
+        console.error(
+          JSON.stringify({ job: jobName, err: err.message, stack: err.stack }),
+          'Cron job failed'
+        );
+      } finally {
+        global.attendanceAnomalyRunning = false;
       }
     });
   } catch (err) {

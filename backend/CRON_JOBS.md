@@ -1,3 +1,18 @@
+## Attendance anomaly advisory
+
+Runs nightly at 02:00 server time. It reviews only the last 30 days of ordinary
+attendance records for interns and sends neutral, advisory flags to the intern's
+direct manager. Approved leave and holidays are excluded through
+`attendance_anomaly_exclusions`; timezone-ambiguous data is not inferred.
+Cutoff-minute patterns are also not evaluated because attendance stores dates,
+not a reliable check-in timestamp.
+
+The job never changes attendance status, penalties, ratings, or manager access.
+Each notification is deduplicated and recorded in `audit_logs` with the evidence
+and aggregate metrics used, so review remains human-led and transparent. AI may
+rewrite the evidence into plain language, but deterministic evidence remains the
+fallback when no provider is available.
+
 # Scheduled Background Jobs (Cron)
 
 ## 1. Verified Proof Image Cleanup
