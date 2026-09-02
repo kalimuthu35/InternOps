@@ -24,21 +24,33 @@ const NOTICE_CATEGORY_ALIASES = {
 };
 
 function normalizeNoticeCategory(rawValue) {
-  const value = String(rawValue || '').trim().toUpperCase();
+  const value = String(rawValue || '')
+    .trim()
+    .toUpperCase();
   if (!value) return 'GENERAL';
 
   const directMatch = NOTICE_CATEGORY_ALIASES[value];
   if (directMatch) return directMatch;
 
-  if (value.includes('INTERNSHIP') || value.includes('JOB') || value.includes('OPPORTUNITY')) {
+  if (
+    value.includes('INTERNSHIP') ||
+    value.includes('JOB') ||
+    value.includes('OPPORTUNITY')
+  ) {
     return 'INTERNSHIP';
   }
-  if (value.includes('EVENT') || value.includes('WEBINAR') || value.includes('SEMINAR')) {
+  if (
+    value.includes('EVENT') ||
+    value.includes('WEBINAR') ||
+    value.includes('SEMINAR')
+  ) {
     return 'EVENT';
   }
   if (value.includes('REMINDER')) return 'REMINDER';
-  if (value.includes('IMPORTANT') || value.includes('URGENT')) return 'IMPORTANT';
-  if (value.includes('ANNOUNCEMENT') || value.includes('NOTICE')) return 'ANNOUNCEMENT';
+  if (value.includes('IMPORTANT') || value.includes('URGENT'))
+    return 'IMPORTANT';
+  if (value.includes('ANNOUNCEMENT') || value.includes('NOTICE'))
+    return 'ANNOUNCEMENT';
   if (value.includes('ALERT')) return 'ALERT';
   if (value.includes('NEWS')) return 'NEWS';
   return 'GENERAL';
@@ -92,7 +104,8 @@ function extractEligibility(content) {
 }
 
 function extractAction(content) {
-  if (/apply|application|register|registration/i.test(content)) return 'Apply Now';
+  if (/apply|application|register|registration/i.test(content))
+    return 'Apply Now';
   if (/join|register|sign up|enroll/i.test(content)) return 'Register Now';
   if (/learn more|details|more information/i.test(content)) return 'Learn More';
   if (/view|details|read more/i.test(content)) return 'View Details';
@@ -102,16 +115,22 @@ function extractAction(content) {
 function extractTitleFromContent(content) {
   const cleaned = normalizeText(content).replace(/\s+/g, ' ');
   const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || cleaned;
-  const compact = firstSentence.replace(/^(we are inviting all students to|we invite all students to|students are invited to|interested candidates should|applications are open for|join us for)\s+/i, '');
+  const compact = firstSentence.replace(
+    /^(we are inviting all students to|we invite all students to|students are invited to|interested candidates should|applications are open for|join us for)\s+/i,
+    ''
+  );
   const trimmed = compact.replace(/\s*[-–—]\s*.*$/, '');
-  return trimmed.length > 100 ? `${trimmed.slice(0, 97).trim()}...` : trimmed || 'Notice';
+  return trimmed.length > 100
+    ? `${trimmed.slice(0, 97).trim()}...`
+    : trimmed || 'Notice';
 }
 
 function buildFallbackNoticeSuggestion(content) {
   const cleaned = normalizeText(content || '');
   const category = normalizeNoticeCategory(cleaned);
   const title = extractTitleFromContent(cleaned);
-  const summary = cleaned.length > 160 ? `${cleaned.slice(0, 157).trim()}...` : cleaned;
+  const summary =
+    cleaned.length > 160 ? `${cleaned.slice(0, 157).trim()}...` : cleaned;
 
   return {
     title: title || 'Notice',
@@ -122,7 +141,10 @@ function buildFallbackNoticeSuggestion(content) {
     dateTime: 'Not specified',
     link: extractLink(cleaned),
     action: extractAction(cleaned),
-    importantDetails: [extractDeadline(cleaned), extractEligibility(cleaned)].filter((value) => value && value !== 'Not specified'),
+    importantDetails: [
+      extractDeadline(cleaned),
+      extractEligibility(cleaned),
+    ].filter((value) => value && value !== 'Not specified'),
     improvedContent: cleaned,
   };
 }
@@ -131,7 +153,10 @@ function parseAiSuggestionResponse(rawText) {
   if (!rawText) return {};
 
   let text = rawText.trim();
-  text = text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+  text = text
+    .replace(/^```json\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
 
   try {
     return JSON.parse(text);
@@ -153,14 +178,20 @@ function normalizeSuggestionOutput(raw, fallbackContent) {
   const parsed = parseAiSuggestionResponse(raw) || {};
   const fallback = buildFallbackNoticeSuggestion(fallbackContent);
   const title = normalizeText(parsed.title || fallback.title);
-  const category = normalizeNoticeCategory(parsed.category || fallback.category);
+  const category = normalizeNoticeCategory(
+    parsed.category || fallback.category
+  );
   const summary = normalizeText(parsed.summary || fallback.summary);
   const deadline = normalizeText(parsed.deadline || fallback.deadline);
   const eligibility = normalizeText(parsed.eligibility || fallback.eligibility);
-  const dateTime = normalizeText(parsed.dateTime || parsed.datetime || fallback.dateTime);
+  const dateTime = normalizeText(
+    parsed.dateTime || parsed.datetime || fallback.dateTime
+  );
   const link = normalizeText(parsed.link || fallback.link);
   const action = normalizeText(parsed.action || fallback.action);
-  const improvedContent = normalizeText(parsed.improvedContent || parsed.content || fallback.improvedContent);
+  const improvedContent = normalizeText(
+    parsed.improvedContent || parsed.content || fallback.improvedContent
+  );
 
   return {
     title: title || fallback.title,
@@ -173,8 +204,12 @@ function normalizeSuggestionOutput(raw, fallbackContent) {
     action: action || fallback.action,
     improvedContent: improvedContent || fallbackContent,
     importantDetails: Array.isArray(parsed.importantDetails)
-      ? parsed.importantDetails.map((item) => normalizeText(item)).filter(Boolean)
-      : [deadline, eligibility].filter((item) => item && item !== 'Not specified'),
+      ? parsed.importantDetails
+          .map((item) => normalizeText(item))
+          .filter(Boolean)
+      : [deadline, eligibility].filter(
+          (item) => item && item !== 'Not specified'
+        ),
   };
 }
 
@@ -330,7 +365,16 @@ async function noticesRoutes(fastify) {
             title: z.string().trim().min(1, 'Title is required'),
             content: z.string().trim().min(1, 'Content is required'),
             category: z
-              .enum(['GENERAL', 'REMINDER', 'ALERT', 'NEWS', 'IMPORTANT', 'ANNOUNCEMENT', 'EVENT', 'INTERNSHIP'])
+              .enum([
+                'GENERAL',
+                'REMINDER',
+                'ALERT',
+                'NEWS',
+                'IMPORTANT',
+                'ANNOUNCEMENT',
+                'EVENT',
+                'INTERNSHIP',
+              ])
               .optional(),
           })
         ),
@@ -379,7 +423,16 @@ async function noticesRoutes(fastify) {
               .min(1, 'Content cannot be empty')
               .optional(),
             category: z
-              .enum(['GENERAL', 'REMINDER', 'ALERT', 'NEWS', 'IMPORTANT', 'ANNOUNCEMENT', 'EVENT', 'INTERNSHIP'])
+              .enum([
+                'GENERAL',
+                'REMINDER',
+                'ALERT',
+                'NEWS',
+                'IMPORTANT',
+                'ANNOUNCEMENT',
+                'EVENT',
+                'INTERNSHIP',
+              ])
               .optional(),
             is_active: z.boolean().optional(),
           })

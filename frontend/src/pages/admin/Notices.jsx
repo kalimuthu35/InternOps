@@ -31,7 +31,16 @@ import {
 } from '../../components/ui';
 import CustomSelect from '../../components/CustomSelect';
 
-const CATEGORIES = ['GENERAL', 'REMINDER', 'ALERT', 'NEWS', 'IMPORTANT', 'ANNOUNCEMENT', 'EVENT', 'INTERNSHIP'];
+const CATEGORIES = [
+  'GENERAL',
+  'REMINDER',
+  'ALERT',
+  'NEWS',
+  'IMPORTANT',
+  'ANNOUNCEMENT',
+  'EVENT',
+  'INTERNSHIP',
+];
 
 const CATEGORY_STYLES = {
   GENERAL:
@@ -48,10 +57,22 @@ const CATEGORY_META = {
   REMINDER: { Icon: Clock, color: 'text-amber-500', label: 'Reminder' },
   ALERT: { Icon: AlertTriangle, color: 'text-rose-500', label: 'Alert' },
   NEWS: { Icon: Newspaper, color: 'text-emerald-500', label: 'News' },
-  IMPORTANT: { Icon: AlertTriangle, color: 'text-rose-500', label: 'Important' },
-  ANNOUNCEMENT: { Icon: Megaphone, color: 'text-violet-500', label: 'Announcement' },
+  IMPORTANT: {
+    Icon: AlertTriangle,
+    color: 'text-rose-500',
+    label: 'Important',
+  },
+  ANNOUNCEMENT: {
+    Icon: Megaphone,
+    color: 'text-violet-500',
+    label: 'Announcement',
+  },
   EVENT: { Icon: CalendarClock, color: 'text-cyan-500', label: 'Event' },
-  INTERNSHIP: { Icon: Sparkles, color: 'text-emerald-500', label: 'Internship' },
+  INTERNSHIP: {
+    Icon: Sparkles,
+    color: 'text-emerald-500',
+    label: 'Internship',
+  },
 };
 
 const CATEGORY_OPTIONS = CATEGORIES.map((category) => ({
@@ -91,12 +112,17 @@ function NoticeForm({
   const [suggestionError, setSuggestionError] = useState('');
 
   const suggestionSummary = useMemo(
-    () => [
-      suggestion?.summary,
-      suggestion?.deadline && suggestion.deadline !== 'Not specified' ? `Deadline: ${suggestion.deadline}` : null,
-      suggestion?.eligibility && suggestion.eligibility !== 'Not specified' ? `Eligibility: ${suggestion.eligibility}` : null,
-      suggestion?.action ? `Action: ${suggestion.action}` : null,
-    ].filter(Boolean),
+    () =>
+      [
+        suggestion?.summary,
+        suggestion?.deadline && suggestion.deadline !== 'Not specified'
+          ? `Deadline: ${suggestion.deadline}`
+          : null,
+        suggestion?.eligibility && suggestion.eligibility !== 'Not specified'
+          ? `Eligibility: ${suggestion.eligibility}`
+          : null,
+        suggestion?.action ? `Action: ${suggestion.action}` : null,
+      ].filter(Boolean),
     [suggestion]
   );
 
@@ -111,14 +137,17 @@ function NoticeForm({
     setIsSuggesting(true);
 
     try {
-      const { data } = await api.post('/notices/ai-suggest', { content: trimmed });
+      const { data } = await api.post('/notices/ai-suggest', {
+        content: trimmed,
+      });
       setSuggestion(data);
       if (data?.title) setTitle(data.title);
       if (data?.category) setCategory(data.category);
       if (data?.improvedContent) setContent(data.improvedContent);
     } catch (error) {
       setSuggestionError(
-        error?.response?.data?.error || 'AI suggestion failed. Please review and edit manually.'
+        error?.response?.data?.error ||
+          'AI suggestion failed. Please review and edit manually.'
       );
     } finally {
       setIsSuggesting(false);
@@ -150,7 +179,11 @@ function NoticeForm({
           disabled={isPending || isSuggesting || !content.trim()}
           className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-200"
         >
-          {isSuggesting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+          {isSuggesting ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Wand2 className="w-3.5 h-3.5" />
+          )}
           AI Suggest
         </button>
       </div>
