@@ -16,10 +16,14 @@ describe('prompt security', () => {
   });
 
   it('allows legitimate prompt-engineering discussion', () => {
-    expect(() => sanitizePrompt('Explain how a system prompt differs from user content.')).not.toThrow();
+    expect(() =>
+      sanitizePrompt('Explain how a system prompt differs from user content.')
+    ).not.toThrow();
   });
 
   it('normalizes zero-width characters before returning content', () => {
-    expect(sanitizePrompt('  Write\u200b a concise notice  ')).toBe('Write a concise notice');
+    expect(sanitizePrompt('  Write\u200b a concise notice  ')).toBe(
+      'Write a concise notice'
+    );
   });
 });
