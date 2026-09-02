@@ -2,13 +2,6 @@ require('dotenv').config();
 const validateEnv = require('./config/validateEnv');
 validateEnv();
 
-const {
-  initSentry,
-  captureException: sentryCaptureException,
-  flushSentry,
-} = require('./config/sentry');
-initSentry();
-
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const Fastify = require('fastify');
@@ -114,13 +107,9 @@ app.get(
 
     const healthy = checks.db && checks.redis;
 
-    reply.status(healthy ? 200 : 503).send({
-      status: healthy ? 'healthy' : 'degraded',
-      checks,
-      uptime: Math.floor(process.uptime()),
-      version: require('../package.json').version,
-      timestamp: new Date().toISOString(),
-    });
+    reply
+      .status(healthy ? 200 : 503)
+      .send({ status: healthy ? 'healthy' : 'degraded', checks });
   }
 );
 
@@ -404,15 +393,6 @@ app.setErrorHandler((error, request, reply) => {
 
   if (statusCode >= 500) {
     request.log.error(logPayload, 'Unhandled server error');
-
-    // report errors to sentry
-    sentryCaptureException(error, {
-      userId: request.user?.id || null,
-      requestId: request.id,
-      route: request.url,
-      method: request.method,
-      statusCode,
-    });
   } else {
     request.log.warn(logPayload, 'Request error');
   }
@@ -467,9 +447,6 @@ const gracefulShutdown = async (signal) => {
     // close DB pool connections
     await pool.end();
 
-    // flush pending sentry events before exiting
-    await flushSentry(2000);
-
     app.log.info('Cleanup completed. Exiting now.');
 
     if (process.env.NODE_ENV !== 'test') {
@@ -485,25 +462,6 @@ const gracefulShutdown = async (signal) => {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-// capture unhandled promise rejections and uncaught exceptions
-process.on('unhandledRejection', (reason) => {
-  app.log.error({ err: reason }, 'Unhandled promise rejection');
-  sentryCaptureException(
-    reason instanceof Error ? reason : new Error(String(reason)),
-    {
-      extra: { type: 'unhandledRejection' },
-    }
-  );
-});
-
-process.on('uncaughtException', (error) => {
-  app.log.error({ err: error }, 'Uncaught exception — process will exit');
-  sentryCaptureException(error, {
-    extra: { type: 'uncaughtException' },
-  });
-  flushSentry(2000).finally(() => process.exit(1));
-});
 
 if (require.main === module) {
   start();
