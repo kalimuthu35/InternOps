@@ -37,7 +37,10 @@ function evaluateAttendanceSnapshot(snapshot) {
   return flags;
 }
 
-async function getAttendanceAnomalyCandidates(client = pool, windowDays = WINDOW_DAYS) {
+async function getAttendanceAnomalyCandidates(
+  client = pool,
+  windowDays = WINDOW_DAYS
+) {
   const result = await client.query(
     `WITH eligible AS (
        SELECT a.user_id, a.date, a.status,
@@ -136,7 +139,9 @@ async function phraseFlag(flag) {
         },
       ],
     });
-    const text = String(result.content || '').replace(/\s+/g, ' ').trim();
+    const text = String(result.content || '')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (text && text.length <= 240) return text;
   } catch (error) {
     console.warn('[Attendance anomaly AI] unavailable:', error.message);
@@ -144,8 +149,14 @@ async function phraseFlag(flag) {
   return flag.reason;
 }
 
-async function runAttendanceAnomalyJob({ client = pool, now = new Date() } = {}) {
-  const lock = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [727101]);
+async function runAttendanceAnomalyJob({
+  client = pool,
+  now = new Date(),
+} = {}) {
+  const lock = await client.query(
+    'SELECT pg_try_advisory_lock($1) AS locked',
+    [727101]
+  );
   if (!lock.rows[0].locked) return { skipped: true, flags: 0 };
 
   try {
@@ -167,14 +178,18 @@ async function runAttendanceAnomalyJob({ client = pool, now = new Date() } = {})
       await client.query(
         `INSERT INTO audit_logs (user_id, action, resource_type, resource_id, details, user_agent)
          VALUES ($1, 'ATTENDANCE_ANOMALY_FLAGGED', 'attendance_anomaly', $2, $3, 'InternOpsCron')`,
-        [flag.managerId, flag.internId, JSON.stringify({
-          dedupeKey,
-          flagType: flag.type,
-          evidence: flag.reason,
-          metrics: flag.metrics,
-          advisoryOnly: true,
-          createdAt: now.toISOString(),
-        })]
+        [
+          flag.managerId,
+          flag.internId,
+          JSON.stringify({
+            dedupeKey,
+            flagType: flag.type,
+            evidence: flag.reason,
+            metrics: flag.metrics,
+            advisoryOnly: true,
+            createdAt: now.toISOString(),
+          }),
+        ]
       );
       sent++;
     }

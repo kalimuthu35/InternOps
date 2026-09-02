@@ -1,4 +1,6 @@
-const { evaluateAttendanceSnapshot } = require('../../src/modules/attendance/anomaly.service');
+const {
+  evaluateAttendanceSnapshot,
+} = require('../../src/modules/attendance/anomaly.service');
 
 describe('attendance anomaly advisory rules', () => {
   test('flags supported statistical patterns only', () => {
