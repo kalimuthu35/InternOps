@@ -330,7 +330,16 @@ async function callDeepSeek(messages) {
 }
 
 async function callGemini(messages) {
-  const prompt = buildPrompt(messages);
+  const systemMessages = messages
+    .filter((message) => message.role === 'system')
+    .map((message) => message.content)
+    .join('\n');
+  const contents = messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }],
+    }));
 
   const response = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${
@@ -342,12 +351,10 @@ async function callGemini(messages) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
+        ...(systemMessages
+          ? { systemInstruction: { parts: [{ text: systemMessages }] } }
+          : {}),
+        contents,
       }),
     }
   );
@@ -367,7 +374,12 @@ async function callGemini(messages) {
 }
 
 async function callHuggingFace(messages) {
-  const prompt = buildPrompt(messages);
+  const prompt = messages
+    .map((message) => {
+      const role = message.role.toUpperCase();
+      return `<|${role}|>\n${message.content}\n<|END_${role}|>`;
+    })
+    .join('\n');
 
   const response = await fetchWithTimeout(
     `https://api-inference.huggingface.co/models/${
@@ -528,6 +540,7 @@ module.exports = {
   generateAIResponse,
   getProviderHealth,
   ResponseSizeLimitError,
+  buildPrompt,
   // Exported for testing regression
   _caches: caches,
 };
