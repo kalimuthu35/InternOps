@@ -1,7 +1,10 @@
 const crypto = require('crypto');
 const { LRUCache } = require('lru-cache');
+const { GoogleGenAI } = require('@google/genai');
 const config = require('../config');
 const { getRedisClient } = require('../config/redis');
+const { safeParseJSON } = require('../utils/promptCleaner');
+const { sanitizePrompt } = require('../utils/promptSecurity');
 
 const failureState = new Map();
 
@@ -11,9 +14,18 @@ const COOLDOWN_MS = Number(
 );
 const CACHE_TTL_MS = Number(process.env.AI_CACHE_TTL_MS || 5 * 60 * 1000);
 const CACHE_MAX_ENTRIES = Number(process.env.AI_CACHE_MAX_ENTRIES || 500);
-const MAX_RESPONSE_BYTES = Number(
-  process.env.AI_MAX_RESPONSE_BYTES || 2 * 1024 * 1024 // 2MB default cap
+
+const MAX_AI_RESPONSE_BYTES = Number(
+  process.env.AI_MAX_RESPONSE_BYTES || 5 * 1024 * 1024
 );
+
+class ResponseSizeLimitError extends Error {
+  constructor(message = 'AI provider response exceeded size cap') {
+    super(message);
+    this.name = 'ResponseSizeLimitError';
+    this.statusCode = 413;
+  }
+}
 
 const USER_CACHE_MAX = Number(process.env.AI_USER_CACHE_MAX || 1000);
 const caches = new LRUCache({ max: USER_CACHE_MAX }); // userId -> LRUCache, evicts oldest when full
@@ -31,25 +43,14 @@ function getCache(userId) {
   return cache;
 }
 
-const MAX_AI_RESPONSE_BYTES = Number(
-  process.env.AI_MAX_RESPONSE_BYTES || 5 * 1024 * 1024
-);
-
-class ResponseSizeLimitError extends Error {
-  constructor(message = 'AI provider response exceeded size cap') {
-    super(message);
-    this.name = 'ResponseSizeLimitError';
-    this.statusCode = 413;
-  }
-}
-
 function isPlaceholder(value) {
   return !value || String(value).startsWith('your-');
 }
 
 function getProviderOrder() {
   return (
-    process.env.AI_PROVIDER_ORDER || 'groq,openai,gemini,deepseek,huggingface'
+    process.env.AI_PROVIDER_ORDER ||
+    'gemini,fastapi,groq,openai,deepseek,huggingface'
   )
     .split(',')
     .map((p) => p.trim().toLowerCase())
@@ -75,7 +76,10 @@ async function getCachedResponse(payload) {
     if (redis) {
       const cached = await redis.get(`ai:cache:${payload.userId}:${key}`);
       if (cached) {
-        return JSON.parse(cached);
+        const parsed = safeParseJSON(cached);
+        if (parsed) return parsed;
+
+        console.warn('[AI Cache] Ignoring invalid cached response');
       }
       return null;
     }
@@ -159,16 +163,43 @@ async function fetchWithTimeout(url, options = {}) {
 
   try {
     const response = await fetch(url, fetchOpts);
+
+    if (!response.ok) {
+      const error = new Error(
+        `AI provider failed with status ${response.status}`
+      );
+      error.code =
+        response.status >= 500
+          ? 'AI_PROVIDER_SERVER_ERROR'
+          : 'AI_PROVIDER_HTTP_ERROR';
+      error.statusCode = response.status;
+      throw error;
+    }
+
     // Reject oversized responses before buffering the body into memory.
     // Closes the stream-amplification OOM path
     const contentLength = response.headers.get('content-length');
-    if (contentLength && Number(contentLength) > MAX_RESPONSE_BYTES) {
-      throw new Error(
-        `Response exceeds maximum allowed size of ${MAX_RESPONSE_BYTES} bytes`
+    if (contentLength && Number(contentLength) > MAX_AI_RESPONSE_BYTES) {
+      throw new ResponseSizeLimitError(
+        `AI provider response Content-Length exceeds ${MAX_AI_RESPONSE_BYTES} bytes`
       );
     }
 
     return response;
+  } catch (error) {
+    if (error?.name === 'AbortError' || error?.name === 'TimeoutError') {
+      const timeoutError = new Error(
+        `AI provider request timed out after ${timeout}ms`
+      );
+      timeoutError.code = 'AI_PROVIDER_TIMEOUT';
+      throw timeoutError;
+    }
+
+    if (error && !error.code) {
+      error.code = 'AI_PROVIDER_NETWORK_ERROR';
+    }
+
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -238,12 +269,13 @@ async function readResponseTextWithLimit(response) {
 
 async function parseJsonResponseWithLimit(response, providerName) {
   const text = await readResponseTextWithLimit(response);
+  const parsed = safeParseJSON(text);
 
-  try {
-    return JSON.parse(text);
-  } catch {
+  if (!parsed) {
     throw new Error(`${providerName} returned invalid JSON`);
   }
+
+  return parsed;
 }
 
 const MAX_MESSAGES = 32;
@@ -284,10 +316,6 @@ async function callOpenAICompatible({
       temperature: 0.3,
     }),
   });
-
-  if (!response.ok) {
-    throw new Error(`${name} failed with status ${response.status}`);
-  }
 
   const data = await parseJsonResponseWithLimit(response, name);
   const text = data.choices?.[0]?.message?.content;
@@ -340,31 +368,19 @@ async function callGemini(messages) {
       role: message.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: message.content }],
     }));
+  const key = config.ai.geminiKey || '';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
-  const response = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/${
-      process.env.GEMINI_MODEL || 'gemini-1.5-flash'
-    }:generateContent?key=${config.ai.geminiKey}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        ...(systemMessages
-          ? { systemInstruction: { parts: [{ text: systemMessages }] } }
-          : {}),
-        contents,
-      }),
-    }
-  );
+  const ai = new GoogleGenAI({ apiKey: key });
+  const response = await ai.models.generateContent({
+    model: modelName,
+    ...(systemMessages
+      ? { config: { systemInstruction: systemMessages } }
+      : {}),
+    contents,
+  });
 
-  if (!response.ok) {
-    throw new Error(`gemini failed with status ${response.status}`);
-  }
-
-  const data = await parseJsonResponseWithLimit(response, 'gemini');
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text = response.text;
 
   if (!text) {
     throw new Error('gemini returned empty response');
@@ -397,10 +413,6 @@ async function callHuggingFace(messages) {
     }
   );
 
-  if (!response.ok) {
-    throw new Error(`huggingface failed with status ${response.status}`);
-  }
-
   const data = await parseJsonResponseWithLimit(response, 'huggingface');
 
   const text =
@@ -415,7 +427,60 @@ async function callHuggingFace(messages) {
   return text;
 }
 
+async function callFastAPI(messages) {
+  const baseUrl = config.ai.fastapiUrl || 'http://localhost:8000';
+  const response = await fetchWithTimeout(`${baseUrl}/ai/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ messages }),
+  });
+
+  const data = await parseJsonResponseWithLimit(response, 'fastapi');
+  if (!data || !data.content) {
+    throw new Error('fastapi service returned empty response');
+  }
+
+  return data.content;
+}
+
+async function callFastAPIImage(prompt, authorization) {
+  const baseUrl = config.ai.fastapiUrl || 'http://localhost:8000';
+  const response = await fetchWithTimeout(`${baseUrl}/ai/generate-image`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: authorization,
+    },
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (!response.ok) {
+    const err = new Error(
+      `fastapi image service failed with status ${response.status}`
+    );
+    err.statusCode = response.status;
+    throw err;
+  }
+
+  const data = await parseJsonResponseWithLimit(response, 'fastapi');
+  if (!data || !data.image_base64) {
+    throw new Error('fastapi image service returned empty response');
+  }
+
+  return data;
+}
+
+async function generateAIImage({ prompt, authorization }) {
+  return callFastAPIImage(prompt, authorization);
+}
+
 const providerRegistry = {
+  fastapi: {
+    key: () => config.ai.fastapiUrl || 'http://localhost:8000',
+    call: callFastAPI,
+  },
   groq: {
     key: () => config.ai.groqKey,
     call: callGroq,
@@ -438,14 +503,33 @@ const providerRegistry = {
   },
 };
 
+function createFallbackResponse(errors) {
+  return {
+    provider: null,
+    content: 'AI service is temporarily unavailable. Please try again later.',
+    cached: false,
+    fallback: true,
+    error: {
+      code: 'AI_SERVICE_UNAVAILABLE',
+      message: 'All configured AI providers are unavailable.',
+      providers: errors,
+    },
+  };
+}
+
 async function generateAIResponse({ userId, messages }) {
   const safeMessages = Array.isArray(messages) ? messages : [];
-  const sanitizedMessages = safeMessages.slice(-16).map((m) => ({
-    role: m.role,
-    content: String(m.content || '').slice(0, 2000),
-  }));
+  const sanitizedMessages = safeMessages.slice(-16).map((m) => {
+    const content =
+      m.role === 'user'
+        ? sanitizePrompt(m.content, { maxLength: 2000 })
+        : String(m.content || '').slice(0, 2000);
 
-  //console.log('Sanitized messages:',JSON.stringify(sanitizedMessages, null, 2));
+    return {
+      role: m.role,
+      content,
+    };
+  });
 
   const payload = { userId, messages: sanitizedMessages };
   const cached = await getCachedResponse(payload);
@@ -503,18 +587,24 @@ async function generateAIResponse({ userId, messages }) {
 
       recordFailure(providerName, error);
 
-      console.warn(`[AI] Provider failed: ${providerName}`, error.message);
+      console.warn('[AI] Provider request failed', {
+        provider: providerName,
+        code: error.code || 'AI_PROVIDER_ERROR',
+        statusCode: error.statusCode || null,
+        message: error.message,
+      });
 
       errors.push({
         provider: providerName,
+        code: error.code || 'AI_PROVIDER_ERROR',
+        statusCode: error.statusCode || null,
         reason: error.message,
       });
     }
   }
 
-  const err = new Error('All AI providers unavailable');
-  err.details = errors;
-  throw err;
+  console.error('[AI] All configured providers are unavailable', { errors });
+  return createFallbackResponse(errors);
 }
 
 function getProviderHealth() {
@@ -538,9 +628,11 @@ function getProviderHealth() {
 
 module.exports = {
   generateAIResponse,
+  generateAIImage,
   getProviderHealth,
   ResponseSizeLimitError,
   buildPrompt,
+  createFallbackResponse,
   // Exported for testing regression
   _caches: caches,
 };

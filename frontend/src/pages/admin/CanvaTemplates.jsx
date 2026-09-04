@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   ExternalLink,
@@ -19,10 +20,30 @@ import {
   useTemplates,
   useCreateTemplate,
   useDeleteTemplate,
+  useSeedTemplates,
 } from '../../hooks/useCertificates';
 
-export default function CanvaTemplates() {
+function colorsFor(template) {
+  return template.colorScheme || template.template_data?.colorScheme;
+}
+
+function CanvaTemplates() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  useEffect(() => {
+    const success = searchParams.get('success');
+    const error = searchParams.get('error');
+
+    if (success === 'true') {
+      alert('Canva connected successfully!');
+      setSearchParams({});
+    }
+
+    if (error) {
+      alert(`Canva connection failed: ${error}`);
+      setSearchParams({});
+    }
+  }, [searchParams, setSearchParams]);
   const [newTemplate, setNewTemplate] = useState({
     name: '',
     description: '',
@@ -64,6 +85,7 @@ export default function CanvaTemplates() {
   const importMutation = useCanvaImport();
   const createMutation = useCreateTemplate();
   const deleteMutation = useDeleteTemplate();
+  const seedMutation = useSeedTemplates();
 
   const isConnected = canvaStatus?.connected;
 
@@ -111,7 +133,7 @@ export default function CanvaTemplates() {
 
   const handleSeedDefaults = async () => {
     try {
-      await createMutation.mutateAsync({ seed: true });
+      await seedMutation.mutateAsync({});
       refetchTemplates();
     } catch (error) {
       console.error('Failed to seed templates:', error);
@@ -283,7 +305,7 @@ export default function CanvaTemplates() {
             <div className="flex items-center gap-3">
               <button
                 onClick={handleSeedDefaults}
-                disabled={createMutation.isPending}
+                disabled={seedMutation.isPending}
                 className="flex items-center gap-2 px-4 py-2 text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
               >
                 <Palette className="w-4 h-4" />
@@ -337,16 +359,18 @@ export default function CanvaTemplates() {
 
                     {/* Color Scheme Preview */}
                     <div className="flex items-center gap-1">
-                      {template.colorScheme?.slice(0, 5).map((color, index) => (
-                        <div
-                          key={index}
-                          className="w-6 h-6 rounded-full border-2 border-white dark:border-gray-900 shadow-sm"
-                          style={{ backgroundColor: color }}
-                        />
-                      ))}
-                      {template.colorScheme?.length > 5 && (
+                      {colorsFor(template)
+                        ?.slice(0, 5)
+                        .map((color, index) => (
+                          <div
+                            key={index}
+                            className="w-6 h-6 rounded-full border-2 border-white dark:border-gray-900 shadow-sm"
+                            style={{ backgroundColor: color }}
+                          />
+                        ))}
+                      {colorsFor(template)?.length > 5 && (
                         <span className="text-xs text-gray-500 dark:text-gray-400 ml-1">
-                          +{template.colorScheme.length - 5}
+                          +{colorsFor(template).length - 5}
                         </span>
                       )}
                     </div>
@@ -369,14 +393,14 @@ export default function CanvaTemplates() {
       {showCreateModal &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 overflow-y-auto"
+            className="internops-modal-backdrop fixed inset-0 z-50 overflow-y-auto"
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
           >
             <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
               <div
-                className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75 dark:bg-gray-900 dark:bg-opacity-75"
+                className="fixed inset-0 transition-opacity bg-slate-950/60 backdrop-blur-sm"
                 onClick={() => setShowCreateModal(false)}
               />
 
@@ -507,3 +531,5 @@ export default function CanvaTemplates() {
     </div>
   );
 }
+
+export default CanvaTemplates;
