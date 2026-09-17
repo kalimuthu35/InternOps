@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.auth import User, get_current_user
+from app.core.rate_limit import enforce_rate_limit
 from app.core.rbac import require_permission
+from app.core.usage import increment_usage
 from app.models.certificates import (
     CertificatePreviewRequest,
     CertificateRequest,
@@ -34,9 +37,20 @@ router = APIRouter()
 _ADMIN_ONLY = [Depends(require_permission("AI_CERTIFICATES"))]
 
 
-@router.post("/generate")
-async def generate_certificate(request: CertificateRequest):
+@router.post(
+    "/generate",
+    dependencies=[
+        Depends(get_current_user),
+        Depends(enforce_rate_limit),
+        Depends(require_permission("CERTIFICATE_GENERATION")),
+    ],
+)
+async def generate_certificate(
+    request: CertificateRequest,
+    current_user: User = Depends(get_current_user),
+):
     result = await generate_certificate_design(request.task)
+    await increment_usage(current_user.id)
     return {
         "certificate_design": result
     }
