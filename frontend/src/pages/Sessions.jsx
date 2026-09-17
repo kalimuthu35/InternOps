@@ -4,15 +4,17 @@ import { useNavigate } from 'react-router-dom';
 import useAuthStore from '../store/auth';
 import { Shield, Monitor, AlertTriangle } from 'lucide-react';
 import api from '../lib/axios';
+import { useRouteInitialLoading } from '../components/loading/RouteInitialLoading';
 import {
   PageHeader,
   Card,
   Btn,
   EmptyState,
-  Spinner,
   ApiErrorState,
 } from '../components/ui';
 export default function Sessions() {
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const accessToken = useAuthStore((s) => s.accessToken);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -25,7 +27,11 @@ export default function Sessions() {
   } = useQuery({
     queryKey: ['sessions'],
     queryFn: () => api.get('/sessions/me').then((res) => res.data),
+    enabled: hydrated && !!accessToken,
   });
+  useRouteInitialLoading(
+    !isError && (!hydrated || !accessToken || isLoading || !sessions)
+  );
 
   const [confirming, setConfirming] = useState(false);
   const [revokingId, setRevokingId] = useState(null);
@@ -57,7 +63,7 @@ export default function Sessions() {
   });
 
   return (
-    <div className="animate-fade-in-up">
+    <div className="">
       <PageHeader
         title="Active Sessions"
         icon={
@@ -122,9 +128,7 @@ export default function Sessions() {
         </Card>
       )}
 
-      {isLoading ? (
-        <Spinner />
-      ) : isError ? (
+      {isError ? (
         <ApiErrorState
           error={error}
           title="Failed to load sessions"

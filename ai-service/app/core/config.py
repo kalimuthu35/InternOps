@@ -59,7 +59,6 @@ def _get_key_attr(provider_name: str) -> str:
         return "HUGGINGFACE_TOKEN"
     return f"{provider_clean.upper()}_API_KEY"
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -102,6 +101,11 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     REDIS_URL: Optional[str] = None
     AI_CACHE_TTL: int = 3600
+    # Hard cap on entries kept in the local in-memory fallback cache. Without
+    # Redis configured, every distinct AI request would otherwise accumulate
+    # in this process-local dict for the full TTL, growing without bound
+    # under concurrent load and risking OOM (see issue #2060).
+    AI_MEMORY_CACHE_MAX_SIZE: int = 500
 
     # Circuit Breaker Configuration
     AI_PROVIDER_FAILURE_LIMIT: int = 3

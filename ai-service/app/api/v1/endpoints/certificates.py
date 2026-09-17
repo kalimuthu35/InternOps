@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.auth import User, get_current_user
 from app.core.rate_limit import enforce_rate_limit
+from app.core.rate_limiter import ai_rate_limiter
 from app.core.rbac import require_permission
 from app.core.usage import increment_usage
 from app.models.certificates import (
@@ -49,6 +50,11 @@ async def generate_certificate(
     request: CertificateRequest,
     current_user: User = Depends(get_current_user),
 ):
+        Depends(ai_rate_limiter.check_rate_limit),
+        Depends(require_permission("AI_CERTIFICATES")),
+    ],
+)
+async def generate_certificate(request: CertificateRequest):
     result = await generate_certificate_design(request.task)
     await increment_usage(current_user.id)
     return {

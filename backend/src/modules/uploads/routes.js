@@ -1,16 +1,24 @@
 const {
   sanitizationMiddleware: sanitize,
 } = require('../../middleware/sanitize');
+const rbac = require('../../middleware/rbac');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const auth = require('../../middleware/auth');
 const repo = require('./repository');
 const config = require('../../config');
+const storageService = require('../../services/storageService');
 
 const ALLOWED = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
 
 const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.webp'];
+const MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
 
 const MAGIC_BYTES = {
   'image/jpeg': [[0xff, 0xd8, 0xff]],
@@ -91,69 +99,46 @@ async function routes(fastify) {
         });
       }
 
-      const fileName =
-        `avatar_${req.user.id}_` +
-        `${crypto.randomBytes(6).toString('hex')}${ext}`;
+      const oldAvatarUrl = await repo.getAvatarUrl(req.user.id);
 
-      const uploadPath = path.join(
-        __dirname,
-        '..',
-        '..',
-        '..',
-        config.uploadDir
+      const uploadResult = await storageService.processAndUploadAvatar(
+        buffer,
+        req.user.id
       );
 
-      const targetFilePath = path.resolve(uploadPath, fileName);
-      const absoluteUploadPath = path.resolve(uploadPath);
-
-      // Path traversal protection
-      if (
-        targetFilePath !== absoluteUploadPath &&
-        !targetFilePath.startsWith(absoluteUploadPath + path.sep)
-      ) {
-        return reply.status(400).send({
-          error: 'Invalid file path',
-        });
-      }
-
-      fs.mkdirSync(uploadPath, { recursive: true });
-      fs.writeFileSync(targetFilePath, buffer);
-
-      const url = `/uploads/${fileName}`;
+      const url = uploadResult.url;
+      const fileName = uploadResult.fileName;
 
       try {
         await repo.createImage({
           userId: req.user.id,
           filePath: url,
           fileName,
-          mimeType: data.mimetype,
-          fileSize: buffer.length,
+          mimeType: uploadResult.mimeType,
+          fileSize: uploadResult.fileSize,
         });
 
         await repo.updateAvatarUrl(req.user.id, url);
-      } catch (err) {
-        // Remove the uploaded file if database persistence fails.
-        try {
-          await fs.promises.unlink(targetFilePath);
-        } catch (cleanupErr) {
-          if (cleanupErr.code !== 'ENOENT') {
-            req.log.error(
-              { err: cleanupErr, filePath: targetFilePath },
-              'Failed to clean up uploaded image after database error'
-            );
-          }
-        }
+        await repo.saveImageMetadata(
+          req.user.id,
+          fileName,
+          url,
+          uploadResult.mimeType,
+          uploadResult.fileSize
+        );
 
+        if (oldAvatarUrl && oldAvatarUrl !== url) {
+          await storageService.deleteFile(oldAvatarUrl).catch(() => {});
+        }
+      } catch (err) {
+        await storageService.deleteFile(url).catch((cleanupErr) => {
+          req.log.error(
+            { err: cleanupErr, url },
+            'Failed to clean up uploaded avatar after database error'
+          );
+        });
         throw err;
       }
-
-      await repo.saveImageMetadata(
-        req.user.id,
-        fileName,
-        url,
-        detectedMime,
-        buffer.length
-      );
 
       return {
         success: true,
@@ -209,7 +194,16 @@ async function routes(fastify) {
         });
       }
 
-      return reply.send(fs.createReadStream(filePath));
+      const mimeType = MIME_BY_EXT[path.extname(safeFileName).toLowerCase()];
+      if (!mimeType) {
+        return reply.status(400).send({
+          error: 'Unsupported image type',
+        });
+      }
+      return reply
+        .header('Cross-Origin-Resource-Policy', 'cross-origin')
+        .type(mimeType)
+        .send(fs.createReadStream(filePath));
     }
   );
 
@@ -261,7 +255,7 @@ async function routes(fastify) {
   fastify.post(
     '/notice-image',
     {
-      preHandler: [auth, sanitize],
+      preHandler: [auth, rbac('ADMIN', 'SENIOR_TL'), sanitize],
       schema: {
         tags: ['Uploads'],
         description: 'Upload a notice image (multipart)',
@@ -337,14 +331,12 @@ async function routes(fastify) {
 
       await repo.updateAvatarUrl(req.user.id, null);
 
-      if (avatarUrl.startsWith('/uploads/')) {
-        await repo.deleteFile(avatarUrl).catch((err) => {
-          req.log.warn(
-            { err, userId: req.user.id },
-            'Failed to delete avatar file'
-          );
-        });
-      }
+      await storageService.deleteFile(avatarUrl).catch((err) => {
+        req.log.warn(
+          { err, userId: req.user.id },
+          'Failed to delete avatar file'
+        );
+      });
 
       return {
         success: true,

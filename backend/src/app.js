@@ -1,22 +1,14 @@
 require('dotenv').config();
 const validateEnv = require('./config/validateEnv');
 validateEnv();
-<<<<<<< HEAD
 
-=======
->>>>>>> upstream/master
 const {
   initSentry,
   captureException: sentryCaptureException,
   flushSentry,
 } = require('./config/sentry');
 initSentry();
-<<<<<<< HEAD
 
-=======
-const auth = require('./middleware/auth');
-const rbac = require('./middleware/rbac');
->>>>>>> upstream/master
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const Fastify = require('fastify');
@@ -25,12 +17,17 @@ const pool = require('./config/db');
 const metrics = require('./utils/metrics');
 const { initializeWebSocket, getIO } = require('./websocket');
 const noticesRoutes = require('./modules/notices/routes');
-const { getRedisStatus, getRedisClient } = require('./config/redis');
+const {
+  getRedisStatus,
+  getRedisClient,
+  getRedisDegradedFeatures,
+} = require('./config/redis');
 const { csrfMiddleware } = require('./middleware/csrf');
 const { sanitizationMiddleware } = require('./middleware/sanitize');
 const { createAuditLog } = require('./utils/audit');
-const { setupCronJobs } = require('./utils/cron');
+const { setupCronJobs, shutdownCronJobs } = require('./utils/cron');
 const githubSyncOrchestrator = require('./modules/github-sync/orchestrator');
+const { normalizeValidationDetails } = require('./utils/validationError');
 
 const app = Fastify({
   trustProxy: config.nodeEnv === 'production' ? true : 'loopback',
@@ -46,6 +43,10 @@ const app = Fastify({
 });
 
 // Layer 1: Register monitoring routes BEFORE global middleware to ensure observability
+app.addHook('onRequest', metrics.trackActiveRequests);
+app.addHook('onRequest', async (request) => {
+  request.metricsStartTime = process.hrtime.bigint().toString();
+});
 
 app.get(
   '/metrics',
@@ -68,6 +69,7 @@ app.get(
   },
   metrics.metricsEndpoint
 );
+
 app.get(
   '/health',
   {
@@ -104,25 +106,29 @@ app.get(
 );
 
 app.get(
-  '/health/full',
+  '/health/detailed',
   {
+    preHandler: [auth, rbac('ADMIN')],
     config: {
       rateLimit: false,
     },
   },
   async (req, reply) => {
     const checks = { db: false, redis: false };
+
     try {
       await pool.query('SELECT 1');
       checks.db = true;
     } catch {}
+
     const redisStatus = getRedisStatus();
+
     checks.redis =
       process.env.NODE_ENV === 'test' ||
       redisStatus === 'connected' ||
       redisStatus === 'disabled';
+
     const healthy = checks.db && checks.redis;
-<<<<<<< HEAD
 
     reply.status(healthy ? 200 : 503).send({
       status: healthy ? 'healthy' : 'degraded',
@@ -131,11 +137,6 @@ app.get(
       version: require('../package.json').version,
       timestamp: new Date().toISOString(),
     });
-=======
-    reply
-      .status(healthy ? 200 : 503)
-      .send({ status: healthy ? 'healthy' : 'degraded', checks });
->>>>>>> upstream/master
   }
 );
 
@@ -165,7 +166,7 @@ app.register(require('@fastify/cors'), {
     return cb(corsError, false);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 });
 
@@ -183,6 +184,13 @@ app.register(require('@fastify/helmet'), {
   },
 });
 
+app.register(require('fastify-raw-body'), {
+  field: 'rawBody',
+  global: false,
+  encoding: 'utf8',
+  runFirst: true,
+});
+
 app.register(require('@fastify/compress'), {
   global: true,
   encodings: ['gzip', 'deflate', 'br'],
@@ -195,6 +203,7 @@ app.register(require('@fastify/rate-limit'), {
 });
 
 app.register(require('@fastify/cookie'));
+
 app.addHook('preHandler', async (request, reply) => {
   const path = request.routerPath ?? request.routeOptions?.url;
   if (path === '/api/v1/auth/logout') return;
@@ -213,6 +222,9 @@ app.register(require('@fastify/multipart'), {
 app.register(require('@fastify/static'), {
   root: path.join(__dirname, '..', config.uploadDir),
   prefix: '/uploads/',
+  setHeaders: (res) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  },
 });
 
 if (process.env.NODE_ENV !== 'test') {
@@ -306,6 +318,9 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.register(require('./routes'), { prefix: '/api/v1' });
 app.register(require('./routes.v2'), { prefix: '/api/v2' });
+app.register(require('./modules/proof-submissions/routes'), {
+  prefix: '/api/proofs',
+});
 app.register(require('./modules/github-sync/routes'), {
   prefix: '/api/v1/github',
 });
@@ -325,12 +340,6 @@ app.get('/fallback', async (req, reply) => {
   `);
 });
 
-app.addHook('onRequest', metrics.trackActiveRequests);
-
-app.addHook('onRequest', async (request) => {
-  request.startTime = Date.now();
-});
-
 app.addHook('onRequest', async (request) => {
   request.log.info(
     {
@@ -343,7 +352,7 @@ app.addHook('onRequest', async (request) => {
 });
 
 app.addHook('onResponse', async (request, reply) => {
-  metrics.observeHttpRequest(request, reply, request.startTime);
+  metrics.observeHttpRequest(request, reply, request.metricsStartTime);
 
   if (!request?.auditOnResponse) return;
   if (reply.statusCode >= 200 && reply.statusCode < 300) {
@@ -371,6 +380,7 @@ function formatValidationPath(value) {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/^./, (character) => character.toUpperCase());
 }
+
 function validationDetailMessage(detail) {
   const message = detail?.message || 'is invalid';
   const field = formatValidationPath(
@@ -378,11 +388,13 @@ function validationDetailMessage(detail) {
   );
   return field ? `${field}: ${message}` : message;
 }
+
 function validationPayload(details, requestId) {
   const validationDetails = details || [];
   const validationMessage = validationDetails.length
     ? validationDetailMessage(validationDetails[0])
     : 'Please check the submitted values.';
+
   return {
     error: 'Validation error',
     message: validationMessage,
@@ -391,6 +403,7 @@ function validationPayload(details, requestId) {
     requestId,
   };
 }
+
 app.setErrorHandler((error, request, reply) => {
   if (error.validation) {
     request.log.warn(
@@ -407,11 +420,7 @@ app.setErrorHandler((error, request, reply) => {
       },
       'Validation error'
     );
-    const validationDetails = error.validation.map((v) => ({
-      path: v.instancePath || v.dataPath,
-      message: v.message,
-      keyword: v.keyword,
-    }));
+    const validationDetails = normalizeValidationDetails(error.validation);
     const payload = validationPayload(validationDetails, request.id);
     return reply.status(400).send(payload);
   }
@@ -431,7 +440,7 @@ app.setErrorHandler((error, request, reply) => {
       },
       'Zod validation error'
     );
-    const validationDetails = error.issues || [];
+    const validationDetails = normalizeValidationDetails(error.issues || []);
     const payload = validationPayload(validationDetails, request.id);
     return reply.status(400).send(payload);
   }
@@ -444,6 +453,7 @@ app.setErrorHandler((error, request, reply) => {
     isClientError || isOperational
       ? error.message || 'Request failed'
       : 'Internal Server Error';
+
   const responseCode =
     isClientError || isOperational
       ? error.code || 'REQUEST_ERROR'
@@ -464,16 +474,8 @@ app.setErrorHandler((error, request, reply) => {
 
   if (statusCode >= 500) {
     request.log.error(logPayload, 'Unhandled server error');
-<<<<<<< HEAD
 
-    // report errors to sentry
-    sentryCaptureException(error, {
-      userId: request.user?.id || null,
-      requestId: request.id,
-      route: request.url,
-      method: request.method,
-      statusCode,
-=======
+    // Report error to Sentry with updated tags format
     sentryCaptureException(error, {
       userId: request.user?.id || null,
       tags: {
@@ -482,7 +484,6 @@ app.setErrorHandler((error, request, reply) => {
         method: request.method,
         statusCode: String(statusCode),
       },
->>>>>>> upstream/master
     });
   } else {
     request.log.warn(logPayload, 'Request error');
@@ -496,32 +497,68 @@ app.setErrorHandler((error, request, reply) => {
   });
 });
 
-if (process.env.NODE_ENV !== 'test') {
-  setupCronJobs();
-  githubSyncOrchestrator.initialize();
-}
-
 const bulkJobQueue = require('./services/bulkJobQueue');
+const verificationService = require('./modules/proof-submissions/verification.service');
 const {
   checkDatabase,
   integrationStatus,
   writeStartupSummary,
+  createBackgroundServiceDiagnostic,
 } = require('./utils/startupDiagnostics');
 
 const start = async () => {
   try {
     const database = await checkDatabase(pool, config.databaseUrl);
+
     await app.listen({
       port: config.port,
       host: config.host,
     });
+
     initializeWebSocket(app.server, app.log);
-    await bulkJobQueue.init();
     await getRedisClient();
+    await bulkJobQueue.init();
+    await verificationService.initQueue();
+
+    if (process.env.NODE_ENV !== 'test') {
+      const backgroundServices = {
+        cron: createBackgroundServiceDiagnostic(),
+        githubSync: createBackgroundServiceDiagnostic(),
+      };
+
+      const cronStart = Date.now();
+      try {
+        setupCronJobs();
+        backgroundServices.cron.state = 'ready';
+        backgroundServices.cron.durationMs = Date.now() - cronStart;
+      } catch (err) {
+        backgroundServices.cron.state = 'failed';
+        backgroundServices.cron.durationMs = Date.now() - cronStart;
+        throw err;
+      }
+
+      const githubSyncStart = Date.now();
+      try {
+        await githubSyncOrchestrator.initialize();
+        backgroundServices.githubSync.state = 'ready';
+        backgroundServices.githubSync.durationMs = Date.now() - githubSyncStart;
+      } catch (err) {
+        backgroundServices.githubSync.state = 'failed';
+        backgroundServices.githubSync.durationMs = Date.now() - githubSyncStart;
+        throw err;
+      }
+
+      app.log.info(
+        { backgroundServices },
+        '[STARTUP] Background services initialized'
+      );
+    }
+
     writeStartupSummary({
       logger: app.log,
       database,
       redis: getRedisStatus(),
+      degradedFeatures: getRedisDegradedFeatures(),
       queue: bulkJobQueue.getStatus(),
       integrations: integrationStatus(config),
       port: config.port,
@@ -547,6 +584,7 @@ const gracefulShutdown = async (signal) => {
 
     try {
       const io = getIO();
+
       if (io) {
         app.log.info('Closing WebSocket server...');
         await new Promise((resolve) => io.close(resolve));
@@ -556,29 +594,31 @@ const gracefulShutdown = async (signal) => {
       app.log.warn({ err: wsErr }, 'Error closing WebSocket server');
     }
 
-    await pool.end();
-    await flushSentry(2000);
-
-<<<<<<< HEAD
-    // flush pending sentry events before exiting
-    await flushSentry(2000);
-
-=======
     try {
       githubSyncOrchestrator.shutdown();
+      shutdownCronJobs();
     } catch (syncErr) {
-      app.log.warn({ err: syncErr }, 'Error shutting down GitHub sync');
+      app.log.warn({ err: syncErr }, 'Error shutting down background services');
     }
 
+    try {
+      await verificationService.closeQueue();
+    } catch (qErr) {
+      app.log.warn({ err: qErr }, 'Error closing verification queue');
+    }
+
+    await pool.end();
+    await flushSentry(2000);
     clearTimeout(forceShutdown);
->>>>>>> upstream/master
     app.log.info('Cleanup completed. Exiting now.');
+
     if (process.env.NODE_ENV !== 'test') {
       process.exit(0);
     }
   } catch (err) {
     app.log.error({ err }, 'Error during shutdown');
     clearTimeout(forceShutdown);
+
     if (process.env.NODE_ENV !== 'test') {
       process.exit(1);
     }
@@ -587,24 +627,7 @@ const gracefulShutdown = async (signal) => {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('unhandledRejection', (reason) => {
-  app.log.error({ err: reason }, 'Unhandled promise rejection');
-  sentryCaptureException(
-    reason instanceof Error ? reason : new Error(String(reason)),
-    { extra: { type: 'unhandledRejection' } }
-  );
-});
-process.on('uncaughtException', (error) => {
-  app.log.error({ err: error }, 'Uncaught exception - process will exit');
-  sentryCaptureException(error, { extra: { type: 'uncaughtException' } });
-  const forceExit = setTimeout(() => process.exit(1), 3000);
-  flushSentry(2000).finally(() => {
-    clearTimeout(forceExit);
-    process.exit(1);
-  });
-});
 
-// capture unhandled promise rejections and uncaught exceptions
 process.on('unhandledRejection', (reason) => {
   app.log.error({ err: reason }, 'Unhandled promise rejection');
   sentryCaptureException(

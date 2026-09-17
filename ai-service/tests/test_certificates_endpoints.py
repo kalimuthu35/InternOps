@@ -9,6 +9,20 @@ from app.core.rate_limit import enforce_rate_limit
 from app.providers.orchestrator import ai_orchestrator
 
 
+@pytest.fixture(autouse=True)
+def mock_rate_limiter_redis(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.counts = {}
+        async def incr(self, key):
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return self.counts[key]
+        async def expire(self, key, seconds):
+            pass
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr("app.core.rate_limiter.get_redis", lambda: fake_redis)
+
 @pytest.fixture
 def app():
     fastapi_app = FastAPI()
@@ -29,6 +43,7 @@ def admin_client(app):
     return TestClient(app, raise_server_exceptions=False)
 
 
+
 def test_validate_endpoint_requires_auth(client):
     r = client.post(
         "/certificates/validate",
@@ -39,6 +54,10 @@ def test_validate_endpoint_requires_auth(client):
 
 def test_generate_endpoint_requires_auth(client):
     r = client.post("/certificates/generate", json={"task": "Create a certificate"})
+    r = client.post(
+        "/certificates/generate",
+        json={"task": "Completed an internship project"},
+    )
     assert r.status_code == 401
 
 
@@ -96,6 +115,66 @@ def test_generate_endpoint_rejects_prompt_injection(admin_client):
     assert r.status_code == 422
 
 
+        id="test-user", roles=[]
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    r = client.post(
+        "/certificates/generate",
+        json={"task": "Completed an internship project"},
+    )
+    assert r.status_code == 403
+
+
+def test_generate_endpoint_success(admin_client, monkeypatch):
+    async def mock_generate(task):
+        return "Generated certificate design"
+
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.certificates.generate_certificate_design",
+        mock_generate,
+    )
+
+    r = admin_client.post(
+        "/certificates/generate",
+        json={"task": "Completed an internship project"},
+    )
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "certificate_design": "Generated certificate design"
+    }
+def test_generate_endpoint_rate_limited(admin_client, monkeypatch):
+    async def mock_generate(task):
+        return "Generated certificate design"
+
+    monkeypatch.setattr(
+        "app.api.v1.endpoints.certificates.generate_certificate_design",
+        mock_generate,
+    )
+
+    from app.api.v1.endpoints.certificates import ai_rate_limiter
+
+    if hasattr(ai_rate_limiter, "history"):
+        ai_rate_limiter.history.clear()
+    ai_rate_limiter.requests_per_minute = 1
+
+    first = admin_client.post(
+        "/certificates/generate",
+        json={"task": "Completed an internship project"},
+    )
+    second = admin_client.post(
+        "/certificates/generate",
+        json={"task": "Completed another internship project"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+    ai_rate_limiter.requests_per_minute = 60
+    if hasattr(ai_rate_limiter, "history"):
+        ai_rate_limiter.history.clear()
+    
 def test_validate_endpoint_success(admin_client, monkeypatch):
     async def mock_generate(messages):
         return "Polished sentence.", "mock-provider"

@@ -81,9 +81,24 @@ jobs:
         run: |
           git diff --name-status --find-renames "$BASE_SHA"...HEAD -- backend/migrations > /tmp/migration-diff.txt
           cat /tmp/migration-diff.txt
-          if awk 'NF && $1 != "A" { found=1 } END { exit found ? 0 : 1 }' /tmp/migration-diff.txt; then
+          allowed_correction='R000 backend/migrations/055_keyset_pagination_indexes.sql backend/migrations/056_keyset_pagination_indexes.sql'
+          normalized_diff=$(tr '\t' ' ' < /tmp/migration-diff.txt | tr -s ' ' | sed '/^$/d')
+          disallowed_diff=$(printf '%s\n' "$normalized_diff" | awk -v allowed="$allowed_correction" '
+            $1 == "A" { next }
+            $0 ~ /^R[0-9][0-9][0-9] / {
+              candidate = $0
+              sub(/^R[0-9][0-9][0-9] /, "R000 ", candidate)
+              if (candidate == allowed) next
+            }
+            { print }
+          ')
+          if [ -n "$disallowed_diff" ]; then
+            printf '%s\n' "$disallowed_diff"
             echo "Existing migration files are immutable. Add a new uniquely numbered migration instead of modifying, renaming, or deleting one."
             exit 1
+          fi
+          if printf '%s\n' "$normalized_diff" | grep -Eq '^R[0-9]{3} backend/migrations/055_keyset_pagination_indexes.sql backend/migrations/056_keyset_pagination_indexes.sql$'; then
+            echo "Allowed one-time corrective rename of the duplicate 055 keyset migration to 056."
           fi
 
       - name: Run backend lint
