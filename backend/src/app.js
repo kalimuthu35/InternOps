@@ -151,11 +151,7 @@ app.register(require('@fastify/cors'), {
       }
     }
 
-    const configured = Array.isArray(config.corsOrigin)
-      ? config.corsOrigin
-      : typeof config.corsOrigin === 'string' && config.corsOrigin.includes(',')
-        ? config.corsOrigin.split(',').map((o) => o.trim())
-        : [config.corsOrigin];
+    const configured = config.corsOrigin;
 
     if (!origin || configured.includes(origin)) {
       return cb(null, true);
@@ -323,6 +319,9 @@ app.register(require('./modules/proof-submissions/routes'), {
 });
 app.register(require('./modules/github-sync/routes'), {
   prefix: '/api/v1/github',
+});
+app.register(require('./modules/chatbot/routes'), {
+  prefix: '/api/chatbot',
 });
 
 app.get('/', async (req, reply) => {

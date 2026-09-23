@@ -1,10 +1,52 @@
 const pool = require('../../config/db');
-const { assertActivityAllowed } = require('../team/lifecycle');
+const {
+  assertActivityAllowed,
+  assertActivityAllowedBulk,
+} = require('../team/lifecycle');
 const {
   MAX_HIERARCHY_DEPTH,
   MAX_HIERARCHY_ROWS,
   roleRankSql,
 } = require('../../utils/hierarchy');
+
+async function getAllUsers() {
+  const { rows } = await pool.query(
+    `SELECT id, full_name, email, role, department_id
+     FROM users
+     WHERE deleted_at IS NULL
+     ORDER BY CASE role
+       WHEN 'ADMIN' THEN 0
+       WHEN 'SENIOR_TL' THEN 1
+       WHEN 'TL' THEN 2
+       WHEN 'CAPTAIN' THEN 3
+       WHEN 'INTERN' THEN 4
+       ELSE 5
+     END,
+     LOWER(COALESCE(NULLIF(TRIM(full_name), ''), email)),
+     LOWER(email), id`
+  );
+  return rows;
+}
+
+async function getUsersByDepartment(departmentId) {
+  const { rows } = await pool.query(
+    `SELECT id, full_name, email, role, department_id
+     FROM users
+     WHERE deleted_at IS NULL AND department_id = $1
+     ORDER BY CASE role
+       WHEN 'ADMIN' THEN 0
+       WHEN 'SENIOR_TL' THEN 1
+       WHEN 'TL' THEN 2
+       WHEN 'CAPTAIN' THEN 3
+       WHEN 'INTERN' THEN 4
+       ELSE 5
+     END,
+     LOWER(COALESCE(NULLIF(TRIM(full_name), ''), email)),
+     LOWER(email), id`,
+    [departmentId]
+  );
+  return rows;
+}
 
 function assertWithinHierarchyRowLimit(rows) {
   if (rows.length <= MAX_HIERARCHY_ROWS) return;
@@ -42,23 +84,80 @@ function memberAppliesToRange(member, from, to) {
   return true;
 }
 
+const STANDARD_END_SECONDS = 17 * 3600; // 17:00:00 = 61200 seconds
+const STANDARD_DAY_MINUTES = 480; // 8 hours
+const STANDARD_DAY_SECONDS = 28800;
+const HALF_DAY_MINUTES = 240; // 4 hours
+const HALF_DAY_SECONDS = 14400;
+
+function computeAttendanceDuration(status, arrivalTime) {
+  const normStatus = (status || '').toUpperCase();
+  if (normStatus === 'ABSENT' || normStatus === 'LEAVE') {
+    return { minutes: 0, seconds: 0 };
+  }
+  if (normStatus === 'HALF_DAY') {
+    return { minutes: HALF_DAY_MINUTES, seconds: HALF_DAY_SECONDS };
+  }
+  if (normStatus === 'PRESENT') {
+    if (arrivalTime) {
+      const parts = String(arrivalTime)
+        .trim()
+        .split(':')
+        .map((p) => parseInt(p, 10) || 0);
+      const arrivalSec =
+        (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+      const durationSec = Math.max(0, STANDARD_END_SECONDS - arrivalSec);
+      return {
+        minutes: Math.floor(durationSec / 60),
+        seconds: durationSec,
+      };
+    }
+    return { minutes: STANDARD_DAY_MINUTES, seconds: STANDARD_DAY_SECONDS };
+  }
+  return { minutes: 0, seconds: 0 };
+}
+
 async function markAttendance(
   userId,
   markedBy,
   date,
   status,
   remarks,
-  client = pool
+  client = pool,
+  options = {}
 ) {
   await assertActivityAllowed(client, userId, date);
 
+  const duration =
+    options.workingDuration ||
+    computeAttendanceDuration(status, options.arrivalTime);
+  const workingMinutes = duration.minutes ?? 0;
+  const workingSeconds = duration.seconds ?? 0;
+  const arrivalTime = options.arrivalTime || null;
+
   const res = await client.query(
-    `INSERT INTO attendance (user_id, marked_by, date, status, remarks)
-     VALUES ($1,$2,$3,$4,$5)
+    `INSERT INTO attendance (user_id, marked_by, date, status, remarks, arrival_time, working_minutes, working_seconds)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (user_id, date)
-     DO UPDATE SET status=$4, marked_by=$2, remarks=$5, updated_at=NOW()
+     DO UPDATE SET
+       status=$4,
+       marked_by=$2,
+       remarks=$5,
+       arrival_time=COALESCE($6, attendance.arrival_time),
+       working_minutes=$7,
+       working_seconds=$8,
+       updated_at=NOW()
      RETURNING *`,
-    [userId, markedBy, date, status, remarks || null]
+    [
+      userId,
+      markedBy,
+      date,
+      status,
+      remarks || null,
+      arrivalTime,
+      workingMinutes,
+      workingSeconds,
+    ]
   );
 
   return res.rows[0];
@@ -121,6 +220,8 @@ async function getAttendance(userId, { from, to, limit = 30, cursor } = {}) {
        a.updated_at,
        a.deleted_at,
        a.arrival_time,
+       a.working_minutes,
+       a.working_seconds,
        m.full_name AS marked_by_name
      FROM attendance a
      LEFT JOIN users m ON m.id = a.marked_by
@@ -277,6 +378,9 @@ async function getDepartmentAttendanceSheet({
        a.status,
        a.remarks,
        a.marked_by,
+       a.arrival_time,
+       a.working_minutes,
+       a.working_seconds,
        marker.full_name AS marked_by_name
      FROM attendance a
      LEFT JOIN users marker ON marker.id = a.marked_by
@@ -319,7 +423,11 @@ async function getMonthlyStats(userId, month, year) {
   const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
   const res = await pool.query(
-    `SELECT status, COUNT(*) as count
+    `SELECT
+       status,
+       COUNT(*)::int as count,
+       COALESCE(SUM(working_minutes), 0)::int as total_working_minutes,
+       COALESCE(SUM(working_seconds), 0)::int as total_working_seconds
      FROM attendance
      WHERE user_id = $1
        AND date >= $2
@@ -333,24 +441,70 @@ async function getMonthlyStats(userId, month, year) {
 }
 
 async function bulkMark(entries, markedBy, client = pool) {
-  const out = [];
-
-  for (const e of entries) {
-    await assertActivityAllowed(client, e.user_id, e.date);
-
-    const r = await client.query(
-      `INSERT INTO attendance (user_id, marked_by, date, status, remarks)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (user_id, date)
-       DO UPDATE SET status=$4, marked_by=$2, remarks=$5, updated_at=NOW()
-       RETURNING *`,
-      [e.user_id, markedBy, e.date, e.status, e.remarks || null]
-    );
-
-    out.push(r.rows[0]);
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return { records: [], skipped: [] };
   }
 
-  return out;
+  const uniqueEntries = Array.from(
+    new Map(
+      entries.map((entry) => [`${entry.user_id}:${entry.date}`, entry])
+    ).values()
+  );
+
+  // One batched query instead of N calls to assertActivityAllowed.
+  const { eligible, skipped } = await assertActivityAllowedBulk(
+    client,
+    uniqueEntries
+  );
+
+  if (eligible.length === 0) {
+    return { records: [], skipped };
+  }
+
+  // One batched UPSERT instead of one INSERT per entry.
+  const values = [];
+  const placeholders = [];
+
+  eligible.forEach((entry, index) => {
+    const duration = computeAttendanceDuration(
+      entry.status,
+      entry.arrival_time
+    );
+    const workingMinutes = duration.minutes ?? 0;
+    const workingSeconds = duration.seconds ?? 0;
+    const base = index * 8;
+    placeholders.push(
+      `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`
+    );
+    values.push(
+      entry.user_id,
+      markedBy,
+      entry.date,
+      entry.status,
+      entry.remarks || null,
+      entry.arrival_time || null,
+      workingMinutes,
+      workingSeconds
+    );
+  });
+
+  const result = await client.query(
+    `INSERT INTO attendance (user_id, marked_by, date, status, remarks, arrival_time, working_minutes, working_seconds)
+     VALUES ${placeholders.join(', ')}
+     ON CONFLICT (user_id, date)
+     DO UPDATE SET
+       status = EXCLUDED.status,
+       marked_by = EXCLUDED.marked_by,
+       remarks = EXCLUDED.remarks,
+       arrival_time = COALESCE(EXCLUDED.arrival_time, attendance.arrival_time),
+       working_minutes = EXCLUDED.working_minutes,
+       working_seconds = EXCLUDED.working_seconds,
+       updated_at = NOW()
+     RETURNING *`,
+    values
+  );
+
+  return { records: result.rows, skipped };
 }
 
 // Returns the set of target ids that fall inside managerId's transitive
@@ -595,6 +749,8 @@ async function markAnomalyViewed(anomalyId, managerId, isAdmin) {
 }
 
 module.exports = {
+  getAllUsers,
+  getUsersByDepartment,
   markAttendance,
   getAttendance,
   getDepartmentAttendanceSheet,
@@ -605,4 +761,5 @@ module.exports = {
   getAnomalies,
   markAnomalyViewed,
   memberAppliesToRange,
+  computeAttendanceDuration,
 };

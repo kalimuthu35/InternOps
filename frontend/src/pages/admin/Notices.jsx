@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getApiErrorMessage } from '../../lib/apiError';
 import {
   Megaphone,
   Plus,
@@ -33,7 +32,6 @@ import {
   ConfirmationModal,
 } from '../../components/ui';
 import CustomSelect from '../../components/CustomSelect';
-import { useRouteInitialLoading } from '../../components/loading/RouteInitialLoading';
 
 const CATEGORIES = [
   'GENERAL',
@@ -111,7 +109,7 @@ function NoticeForm({
   const [title, setTitle] = useState(initial.title ?? '');
   const [content, setContent] = useState(initial.content ?? '');
   const [category, setCategory] = useState(initial.category ?? 'GENERAL');
-  const [image_url, setImageUrl] = useState(initial.image_url ?? '');
+  const [imageUrl, setImageUrl] = useState(initial.image_url ?? '');
   const [action_button_text, setActionButtonText] = useState(
     initial.action_button_text ?? ''
   );
@@ -125,6 +123,33 @@ function NoticeForm({
   const [isUploading, setIsUploading] = useState(false);
   const [suggestionError, setSuggestionError] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+
+  const handleAiAnalyze = async () => {
+    if (!content.trim()) return;
+    setIsAiLoading(true);
+    setUploadError('');
+    try {
+      const res = await api.post('/notices/ai-analyze', {
+        content: content.trim(),
+      });
+      const data = res.data.data;
+      if (data.title && !title) setTitle(data.title);
+      if (data.category) setCategory(data.category);
+      if (data.action_button_text && !action_button_text)
+        setActionButtonText(data.action_button_text);
+      setAiAnalysis(data);
+    } catch (err) {
+      setUploadError(
+        err.response?.data?.error ||
+          err.message ||
+          'Failed to analyze notice with AI'
+      );
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
 
   const suggestionSummary = useMemo(
     () =>
@@ -205,9 +230,9 @@ function NoticeForm({
       </div>
 
       <div className="flex items-center gap-4">
-        {image_url && (
+        {imageUrl && (
           <img
-            src={image_url}
+            src={imageUrl}
             alt="Notice Preview"
             className="h-16 w-32 object-cover rounded-lg border border-slate-200 dark:border-slate-700"
           />
@@ -281,12 +306,12 @@ function NoticeForm({
             value={action_button_link}
             onChange={(e) => setActionButtonLink(e.target.value)}
             disabled={isPending}
-            className="h-[52px] w-full min-w-0 rounded-2xl border border-slate-200 bg-white pl-11 pr-4 text-sm text-slate-800 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-700/80 dark:text-slate-200 dark:placeholder:text-slate-500"
+            className="h-[52px] w-full min-w-0 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/70 pl-11 pr-4 text-sm text-slate-800 dark:text-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/50 transition disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
       </div>
 
-      <div className="ml-1 mt-1 flex items-center gap-2">
+      <div className="flex items-center gap-2 ml-1 mb-2">
         <input
           type="checkbox"
           id="is_featured"
@@ -302,15 +327,15 @@ function NoticeForm({
         </label>
       </div>
 
-      <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="h-[52px] w-full sm:w-72">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="w-full sm:w-64">
           <CustomSelect
             value={category}
             onChange={setCategory}
             options={CATEGORY_OPTIONS}
             placeholder="Select category"
             disabled={isPending}
-            className="h-[52px] w-full dark:!border-slate-700 dark:!bg-slate-800/70"
+            className="w-full"
           />
         </div>
 
@@ -325,15 +350,14 @@ function NoticeForm({
               category,
               is_featured,
             };
-            const imageUrl = image_url.trim();
-            const actionButtonText = action_button_text.trim();
-            const actionButtonLink = action_button_link.trim();
             if (imageUrl) payload.image_url = imageUrl;
-            if (actionButtonText) payload.action_button_text = actionButtonText;
-            if (actionButtonLink) payload.action_button_link = actionButtonLink;
+            if (action_button_text)
+              payload.action_button_text = action_button_text;
+            if (action_button_link)
+              payload.action_button_link = action_button_link;
             onSubmit(payload);
           }}
-          className="h-[52px] min-w-[180px] rounded-2xl px-5"
+          className="rounded-2xl"
         >
           {isPending ? (
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -425,7 +449,7 @@ export default function Notices() {
   });
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="">
       <ConfirmationModal
         open={!!noticeToDelete}
         title="Delete Notice"
@@ -439,24 +463,24 @@ export default function Notices() {
         danger={true}
       />
 
-      <div className="mb-7 flex items-center gap-4">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-amber-200 bg-amber-100 text-amber-600 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="p-2 bg-amber-100 dark:bg-amber-950/40 text-amber-600 dark:text-amber-300 rounded-lg shadow-sm border border-amber-100 dark:border-amber-900/60">
           <Megaphone className="w-6 h-6" />
         </div>
 
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-white tracking-tight">
             Notice Board
           </h1>
 
-          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             Manage announcements visible on the login page
           </p>
         </div>
       </div>
 
-      <Card className="mb-6 border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-900 md:p-6">
-        <h3 className="mb-4 flex items-center gap-2 text-xl font-extrabold text-slate-900 dark:text-white">
+      <Card className="p-6 mb-6 shadow-sm border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+        <h3 className="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2">
           <Plus className="w-4 h-4 text-amber-500" /> New Notice
         </h3>
 
@@ -486,6 +510,15 @@ export default function Notices() {
             </Btn>
           </div>
         </Card>
+      ) : isLoading ? (
+        <div className="flex flex-col gap-3">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="h-32 bg-slate-100 dark:bg-slate-800 rounded-xl animate-pulse"
+            />
+          ))}
+        </div>
       ) : notices.length === 0 ? (
         <EmptyState
           icon="📭"
@@ -497,7 +530,7 @@ export default function Notices() {
           {notices.map((n) => (
             <Card
               key={n.id}
-              className={`group border border-slate-200 bg-white p-4 transition-all dark:border-slate-700 dark:bg-slate-900 md:p-5 ${
+              className={`p-5 transition-all group border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 ${
                 !n.is_active ? 'opacity-60' : ''
               }`}
             >
@@ -510,7 +543,7 @@ export default function Notices() {
                   submitLabel="Save Changes"
                 />
               ) : (
-                <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+                <div className="flex flex-col sm:flex-row items-start gap-4">
                   {n.image_url && (
                     <img
                       src={n.image_url}
@@ -583,7 +616,7 @@ export default function Notices() {
           ))}
 
           {/* Pagination Buttons */}
-          <div className="mt-1 flex items-center justify-between border-t border-slate-200 pt-3 dark:border-slate-700">
+          <div className="flex items-center justify-between pt-4 mt-2 border-t border-slate-200 dark:border-slate-700">
             <button
               onClick={() => setPage((p) => p - 1)}
               disabled={page === 1}
