@@ -55,7 +55,10 @@ export async function initSentry() {
         environment: import.meta.env.MODE || 'development',
         integrations: [
           sentry.browserTracingIntegration(),
-          sentry.replayIntegration({ maskAllText: false, blockAllMedia: false }),
+          sentry.replayIntegration({
+            maskAllText: false,
+            blockAllMedia: false,
+          }),
         ],
         tracesSampleRate: parseFloat(
           import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE || '0.1'

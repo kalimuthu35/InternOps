@@ -323,7 +323,8 @@ function NoticeForm({
           htmlFor="is_featured"
           className="text-sm font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1"
         >
-          Mark as Featured <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
+          Mark as Featured{' '}
+          <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
         </label>
       </div>
 
