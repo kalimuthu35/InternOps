@@ -1,10 +1,7 @@
 import React from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { captureException } from '../lib/sentry';
-<<<<<<< HEAD
-=======
 import { reportClientError } from '../lib/errorReporter';
->>>>>>> upstream/master
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -20,18 +17,11 @@ class ErrorBoundary extends React.Component {
     console.error('ErrorBoundary caught an error:', error, errorInfo);
 
     this.setState({ errorInfo });
-<<<<<<< HEAD
-
-=======
->>>>>>> upstream/master
     captureException(error, {
       extra: { componentStack: errorInfo?.componentStack },
       tags: { source: 'ErrorBoundary' },
     });
-<<<<<<< HEAD
-=======
     reportClientError(error, errorInfo);
->>>>>>> upstream/master
   }
 
   handleReload = () => window.location.reload();
